@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telecomando Musica</title>
+<style>
+  body{background:#111;color:#eee;font-family:system-ui,sans-serif;padding:20px;max-width:480px;margin:auto}
+  h2{color:#7fd}
+  button{padding:14px;margin:6px 4px;border:none;border-radius:8px;font-size:1em;cursor:pointer;background:#2dd77f;color:#000}
+  button.secondary{background:#333;color:#eee}
+  .tabs{display:flex;margin-bottom:16px}
+  .tab{flex:1;padding:10px;text-align:center;background:#222;cursor:pointer;border-radius:8px 8px 0 0}
+  .tab.active{background:#2dd77f;color:#000}
+  .panel{display:none}
+  .panel.active{display:block}
+  .track-item{padding:10px;background:#222;border-radius:8px;margin-bottom:6px;cursor:pointer}
+  .track-item:hover{background:#333}
+  input[type=range]{width:100%}
+  #uploadStatus{margin-top:10px;color:#7fd}
+  progress{width:100%}
+</style>
+</head>
+<body>
+<h2>🎚️ Telecomando Musica</h2>
+
+<div class="tabs">
+  <div class="tab active" data-tab="playlist">Playlist</div>
+  <div class="tab" data-tab="upload">Carica nuovo brano</div>
+</div>
+
+<div class="panel active" id="playlist">
+  <div id="trackList"></div>
+</div>
+
+<div class="panel" id="upload">
+  <input type="file" id="fileInput" accept="audio/*">
+  <div id="uploadStatus"></div>
+  <progress id="progressBar" value="0" max="100" style="display:none"></progress>
+</div>
+
+<div style="margin-top:20px">
+  <button id="playBtn">▶️ Play</button>
+  <button id="pauseBtn" class="secondary">⏸️ Pausa</button>
+  <button id="stopBtn" class="secondary">⏹️ Stop</button>
+</div>
+<div style="margin-top:10px">
+  🔊 <input type="range" id="volSlider" min="0" max="1" step="0.05" value="1">
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+<script>
+// 🔧 STESSA config usata in player.html (basta Realtime Database, niente Storage/Blaze)
+const firebaseConfig = {
+  apiKey: "AIzaSyBsB6MHZtZXk-1XTGuqJpROCGc9-KTy6pU",
+  authDomain: "studyshare-3d5f9.firebaseapp.com",
+  databaseURL: "https://studyshare-3d5f9-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "studyshare-3d5f9",
+  storageBucket: "studyshare-3d5f9.firebasestorage.app",
+  messagingSenderId: "801438647195",
+  appId: "1:801438647195:web:4424458a5d1c238c05973e"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const ROOM = "salotto"; // 🔧 stessa "stanza" di player.html
+
+// Playlist dinamica "ultimi 3 brani caricati": vive dentro Firebase
+// (nodo recentTracks), quindi resta sincronizzata su ogni dispositivo.
+const trackListEl = document.getElementById('trackList');
+const recentRef = db.ref(`musicplayer/rooms/${ROOM}/recentTracks`);
+
+// Disegna la lista ogni volta che cambia (nuovo upload o rimozione slot vecchio)
+recentRef.orderByChild('ts').on('value', snap => {
+  const items = [];
+  snap.forEach(child => { items.push({ key: child.key, ...child.val() }); });
+  items.reverse(); // il più recente in cima
+  trackListEl.innerHTML = '';
+  if (items.length === 0) {
+    trackListEl.innerHTML = '<div style="color:#888">Nessun brano ancora caricato</div>';
+    return;
+  }
+  items.forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'track-item';
+    div.textContent = "🎵 " + item.title;
+    div.onclick = () => sendTrack(item.url, item.title);
+    trackListEl.appendChild(div);
+  });
+});
+
+// Aggiunge un brano appena caricato allo slot più recente; se ci sono già
+// 3 brani, elimina prima il più vecchio (rotazione a 3 posti).
+function addToRecent(url, title) {
+  recentRef.once('value').then(snap => {
+    const items = [];
+    snap.forEach(child => items.push({ key: child.key, ts: child.val().ts }));
+    items.sort((a, b) => a.ts - b.ts); // più vecchio per primo
+    if (items.length >= 3) {
+      recentRef.child(items[0].key).remove();
+    }
+    recentRef.push({ url, title, ts: Date.now() });
+  });
+}
+
+function sendTrack(url, title) {
+  db.ref(`musicplayer/rooms/${ROOM}/nowPlaying`).set({ url, title, ts: Date.now() });
+}
+
+// Feedback visivo reale: il colore del bottone riflette lo stato che il
+// player conferma di aver applicato (non solo il comando che hai inviato tu).
+// Utile anche per verificare a colpo d'occhio che il collegamento funzioni.
+const playBtn = document.getElementById('playBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const stopBtn = document.getElementById('stopBtn');
+
+function setActiveButton(state) {
+  playBtn.style.background  = (state === 'playing') ? '#2dd77f' : '#333';
+  playBtn.style.color       = (state === 'playing') ? '#000' : '#eee';
+  pauseBtn.style.background = (state === 'paused')  ? '#f5a623' : '#333';
+  pauseBtn.style.color      = (state === 'paused')  ? '#000' : '#eee';
+  stopBtn.style.background  = (state === 'stopped') ? '#e74c3c' : '#333';
+  stopBtn.style.color       = (state === 'stopped') ? '#000' : '#eee';
+}
+
+db.ref(`musicplayer/rooms/${ROOM}/status`).on('value', snap => {
+  const s = snap.val();
+  if (!s) return;
+  setActiveButton(s.state);
+});
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.tab).classList.add('active');
+  };
+});
+
+// 🔧 Stesso pattern già usato per l'app catalogo foto: upload diretto su
+// Cloudinary con preset "unsigned", poi si invia al notebook il link restituito.
+const CLOUD_NAME = "dpjdgvydp";      // 🔧 il tuo cloud name Cloudinary
+const UPLOAD_PRESET = "remotesound"; // 🔧 il preset unsigned che hai creato
+
+document.getElementById('fileInput').onchange = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const statusEl = document.getElementById('uploadStatus');
+  const bar = document.getElementById('progressBar');
+  bar.style.display = 'block';
+  bar.value = 0;
+  statusEl.textContent = "Caricamento su Cloudinary...";
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', UPLOAD_PRESET);
+
+  const xhr = new XMLHttpRequest();
+  // resource_type "video" perché Cloudinary gestisce l'audio in quella categoria
+  xhr.open('POST', `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/video/upload`, true);
+
+  xhr.upload.onprogress = (ev) => {
+    if (ev.lengthComputable) bar.value = (ev.loaded / ev.total) * 100;
+  };
+
+  xhr.onload = () => {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      const res = JSON.parse(xhr.responseText);
+      sendTrack(res.secure_url, file.name);
+      addToRecent(res.secure_url, file.name);
+      statusEl.textContent = "✅ Caricato e inviato al notebook";
+    } else {
+      statusEl.textContent = "❌ Errore upload: " + xhr.status;
+    }
+  };
+  xhr.onerror = () => statusEl.textContent = "❌ Errore di rete durante l'upload";
+  xhr.send(formData);
+};
+
+document.getElementById('playBtn').onclick  = () => db.ref(`musicplayer/rooms/${ROOM}/control`).set({action:'play', ts:Date.now()});
+document.getElementById('pauseBtn').onclick = () => db.ref(`musicplayer/rooms/${ROOM}/control`).set({action:'pause', ts:Date.now()});
+document.getElementById('stopBtn').onclick  = () => db.ref(`musicplayer/rooms/${ROOM}/control`).set({action:'stop', ts:Date.now()});
+document.getElementById('volSlider').oninput = (e) => db.ref(`musicplayer/rooms/${ROOM}/control`).set({action:'volume', value: parseFloat(e.target.value), ts:Date.now()});
+</script>
+</body>
+</html>
